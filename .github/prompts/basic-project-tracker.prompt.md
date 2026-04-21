@@ -21,7 +21,7 @@ Create a clear and basic tracker update that answers:
 
 Use only repository evidence such as:
 
-- project.json (primary source)
+- Source code across the repository (primary source)
 - Tracker JSON and report files
 - Workflow files
 - Output and artifact folders
@@ -47,7 +47,7 @@ Do not assume context that is not visible.
 - If evidence is mixed, provide top 2 likely phases with confidence
 - Highlight major gaps only
 - No deep code review, no test critique, no style feedback
-- Prefer structured project data (project.json) over raw repository metrics
+- Prefer full codebase evidence over single metadata files
 - Do not output raw git-stat tables as the main report
 
 ## Output Format
