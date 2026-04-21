@@ -1,5 +1,5 @@
 ---
-description: Generate a basic project tracker summary with current phase, progress, risks, and next actions.
+description: Generate a basic project tracker summary with project description, current phase, progress, risks, and next actions.
 ---
 
 # Basic Project Tracker
