@@ -1,0 +1,170 @@
+name: Basic Project Tracker
+
+on:
+  push:
+    branches:
+      - '**'
+  workflow_dispatch:
+    inputs:
+      target_branch:
+        description: Branch to analyze (for example, main)
+        required: true
+        default: main
+      allowed_branches:
+        description: Comma-separated allowed branches (for example, main,develop,release/*)
+        required: false
+        default: main
+  schedule:
+    - cron: '0 2 * * 5'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: basic-project-tracker-${{ github.ref_name || inputs.target_branch || github.run_id }}
+  cancel-in-progress: true
+
+jobs:
+  analyze-and-report:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Resolve branch configuration
+        id: branch_cfg
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          EVENT_NAME="${{ github.event_name }}"
+          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+            TARGET_BRANCH="${{ inputs.target_branch }}"
+            ALLOWED_RAW="${{ inputs.allowed_branches }}"
+          else
+            TARGET_BRANCH="${{ github.ref_name }}"
+            ALLOWED_RAW="${{ vars.PROJECT_TRACKER_ALLOWED_BRANCHES }}"
+          fi
+
+          if [ -z "${ALLOWED_RAW}" ]; then
+            ALLOWED_RAW="main"
+          fi
+
+          SHOULD_RUN="false"
+          IFS=',' read -ra BRANCH_PATTERNS <<< "$ALLOWED_RAW"
+          for pattern in "${BRANCH_PATTERNS[@]}"; do
+            trimmed="$(echo "$pattern" | xargs)"
+            if [ -n "$trimmed" ] && [[ "$TARGET_BRANCH" == $trimmed ]]; then
+              SHOULD_RUN="true"
+              break
+            fi
+          done
+
+          echo "target_branch=$TARGET_BRANCH" >> "$GITHUB_OUTPUT"
+          echo "allowed_branches=$ALLOWED_RAW" >> "$GITHUB_OUTPUT"
+          echo "should_run=$SHOULD_RUN" >> "$GITHUB_OUTPUT"
+
+      - name: Skip when branch is not allowed
+        if: ${{ steps.branch_cfg.outputs.should_run != 'true' }}
+        shell: bash
+        run: |
+          echo "Skipping project tracker."
+          echo "Current branch: ${{ steps.branch_cfg.outputs.target_branch }}"
+          echo "Allowed branches: ${{ steps.branch_cfg.outputs.allowed_branches }}"
+          echo "To configure non-manual runs, set repository variable PROJECT_TRACKER_ALLOWED_BRANCHES."
+          echo "### Basic Project Tracker" >> "$GITHUB_STEP_SUMMARY"
+          echo "Run skipped because branch is not allowed." >> "$GITHUB_STEP_SUMMARY"
+          echo "Current branch: ${{ steps.branch_cfg.outputs.target_branch }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "Allowed branches: ${{ steps.branch_cfg.outputs.allowed_branches }}" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Checkout selected branch
+        if: ${{ steps.branch_cfg.outputs.should_run == 'true' }}
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+          ref: ${{ steps.branch_cfg.outputs.target_branch }}
+
+      - name: Analyze codebase
+        if: ${{ steps.branch_cfg.outputs.should_run == 'true' }}
+        id: analysis
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          BRANCH="${{ steps.branch_cfg.outputs.target_branch }}"
+          NOW_UTC="$(date -u '+%Y-%m-%d %H:%M:%S UTC')"
+
+          FILE_COUNT="$(git ls-files | wc -l | tr -d ' ')"
+          DIR_COUNT="$(find . -type d -not -path '*/.git/*' | wc -l | tr -d ' ')"
+          LOC_ADDED="$(git log --since='30 days ago' --pretty=tformat: --numstat | awk '{ add += $1 } END { print add + 0 }')"
+          LOC_DELETED="$(git log --since='30 days ago' --pretty=tformat: --numstat | awk '{ del += $2 } END { print del + 0 }')"
+          COMMIT_COUNT="$(git rev-list --count HEAD)"
+          COMMIT_LAST_30="$(git rev-list --count --since='30 days ago' HEAD)"
+
+          TOP_EXTENSIONS="$(git ls-files | awk -F. 'NF>1{print tolower($NF)}' | sort | uniq -c | sort -nr | head -10)"
+          TOP_ACTIVE_FILES="$(git log --since='30 days ago' --name-only --pretty=format: | sed '/^$/d' | sort | uniq -c | sort -nr | head -10)"
+
+          PHASE="Development"
+          if [ -d "outputs/deployment" ] || [ -f "deploy_report.json" ] || [ -f "deploy_report.txt" ]; then
+            PHASE="Deployment"
+          elif [ -d "outputs/testing" ] || [ -d "tests" ] || [ -f "jest.config.js" ]; then
+            PHASE="Testing"
+          elif [ -d "outputs/architecture" ]; then
+            PHASE="Architecture"
+          elif [ -d "outputs/design" ]; then
+            PHASE="Design"
+          elif [ -d "outputs/requirements" ]; then
+            PHASE="Requirements"
+          fi
+
+          mkdir -p tracker
+
+          cat > tracker/project-tracker-report.md <<EOF
+          # Basic Project Tracker Report
+
+          - Generated: ${NOW_UTC}
+          - Repository: ${GITHUB_REPOSITORY}
+          - Branch: ${BRANCH}
+          - Trigger: ${{ github.event_name }}
+
+          ## Current Phase
+
+          - Primary phase: ${PHASE}
+
+          ## Codebase Snapshot
+
+          - Total tracked files: ${FILE_COUNT}
+          - Total directories: ${DIR_COUNT}
+          - Total commits: ${COMMIT_COUNT}
+          - Commits (last 30 days): ${COMMIT_LAST_30}
+          - LOC added (last 30 days): ${LOC_ADDED}
+          - LOC deleted (last 30 days): ${LOC_DELETED}
+
+          ## Top File Types
+
+          ${TOP_EXTENSIONS}
+
+          ## Most Active Files (last 30 days)
+
+          ${TOP_ACTIVE_FILES}
+
+          ## Suggested Next Actions
+
+          1. Review most active files for hotspots and stabilize changes.
+          2. Confirm current phase artifacts are complete for this branch.
+          3. Plan next weekly tracking checkpoint and compare trend metrics.
+          EOF
+
+          echo "report_path=tracker/project-tracker-report.md" >> "$GITHUB_OUTPUT"
+
+      - name: Publish report to workflow summary
+        if: ${{ steps.branch_cfg.outputs.should_run == 'true' }}
+        shell: bash
+        run: |
+          cat "${{ steps.analysis.outputs.report_path }}" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload report artifact
+        if: ${{ steps.branch_cfg.outputs.should_run == 'true' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: basic-project-tracker-${{ github.run_number }}
+          path: ${{ steps.analysis.outputs.report_path }}
