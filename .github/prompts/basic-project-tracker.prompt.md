@@ -1,5 +1,5 @@
 ---
-description: Generate a basic project tracker summary with project description, current phase, progress, risks, and next actions.
+description: Generate a basic project tracker summary with project summary current phase, progress, risks, and next actions.
 ---
 
 # Basic Project Tracker
@@ -11,7 +11,6 @@ You are a project tracker assistant. Provide a simple, evidence-based snapshot o
 ## Objective
 
 Create a clear and basic tracker update that answers:
-
 - What is the project about in brief
 - Where the project stands now
 - Which phase it is currently in
@@ -22,6 +21,7 @@ Create a clear and basic tracker update that answers:
 
 Use only repository evidence such as:
 
+- project.json (primary source)
 - Tracker JSON and report files
 - Workflow files
 - Output and artifact folders
@@ -47,11 +47,16 @@ Do not assume context that is not visible.
 - If evidence is mixed, provide top 2 likely phases with confidence
 - Highlight major gaps only
 - No deep code review, no test critique, no style feedback
+- Prefer structured project data (project.json) over raw repository metrics
+- Do not output raw git-stat tables as the main report
 
 ## Output Format
 
 Project Summary
 - 4 to 6 bullets
+
+Project Brief
+- 1 to 2 bullets about what the project does and who owns it
 
 Current Phase
 - Primary phase: <phase>
@@ -68,11 +73,6 @@ Key Risks or Blockers
 
 Evidence
 - File: <path> | Why: <short reason>
-
-Next Actions
-1. <action>
-2. <action>
-3. <action>
 
 Final Instruction
 
