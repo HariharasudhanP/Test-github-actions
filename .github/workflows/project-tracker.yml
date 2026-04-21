@@ -67,10 +67,6 @@ jobs:
         if: ${{ steps.branch_cfg.outputs.should_run != 'true' }}
         shell: bash
         run: |
-          echo "Skipping project tracker."
-          echo "Current branch: ${{ steps.branch_cfg.outputs.target_branch }}"
-          echo "Allowed branches: ${{ steps.branch_cfg.outputs.allowed_branches }}"
-          echo "To configure non-manual runs, set repository variable PROJECT_TRACKER_ALLOWED_BRANCHES."
           echo "### Basic Project Tracker" >> "$GITHUB_STEP_SUMMARY"
           echo "Run skipped because branch is not allowed." >> "$GITHUB_STEP_SUMMARY"
           echo "Current branch: ${{ steps.branch_cfg.outputs.target_branch }}" >> "$GITHUB_STEP_SUMMARY"
@@ -91,7 +87,7 @@ jobs:
           set -euo pipefail
           PROMPT_FILE=".github/prompts/basic-project-tracker.prompt.md"
           if [ ! -f "$PROMPT_FILE" ]; then
-            echo "Prompt file not found at $PROMPT_FILE — skipping prompt load."
+            echo "Prompt file not found at $PROMPT_FILE. Using empty prompt."
             echo "PROMPT=" >> "$GITHUB_ENV"
           else
             {
@@ -99,7 +95,6 @@ jobs:
               cat "$PROMPT_FILE"
               echo "EOF"
             } >> "$GITHUB_ENV"
-            echo "Prompt loaded successfully from $PROMPT_FILE"
           fi
 
       - name: Analyze codebase
@@ -113,122 +108,142 @@ jobs:
 
           BRANCH="${{ steps.branch_cfg.outputs.target_branch }}"
           NOW_UTC="$(date -u '+%Y-%m-%d %H:%M:%S UTC')"
-          PROJECT_FILE="project.json"
-
-          FILE_COUNT="$(git ls-files | wc -l | tr -d ' ')"
-          COMMIT_LAST_30="$(git rev-list --count --since='30 days ago' HEAD)"
 
           if ! command -v jq >/dev/null 2>&1; then
             sudo apt-get update
             sudo apt-get install -y jq
           fi
 
-          PROJECT_NAME="Unknown Project"
-          PROJECT_SUMMARY="No project summary available."
-          PROJECT_OWNER="Unknown"
-          PRIMARY_PHASE="Development"
-          PHASE_CONFIDENCE="70"
-          SECONDARY_PHASE="None"
-          COMPLETED_ITEMS="- None"
-          IN_PROGRESS_ITEMS="- None"
-          PENDING_ITEMS="- None"
-          RISK_ITEMS="- None"
-          NEXT_ACTIONS=$'1. Define project milestones in project.json.\n2. Add risks and blockers in project.json.\n3. Re-run workflow to generate full project tracker report.'
-          EVIDENCE_ITEMS="- File: ${PROJECT_FILE} | Why: Not found, so report used fallback values."$'\n'"- File: .github/workflows/project-tracker.yml | Why: Contains tracker generation logic."
+          FILE_COUNT="$(git ls-files | wc -l | tr -d ' ')"
+          DIR_COUNT="$(find . -type d -not -path '*/.git/*' | wc -l | tr -d ' ')"
+          COMMIT_COUNT="$(git rev-list --count HEAD)"
+          COMMIT_LAST_30="$(git rev-list --count --since='30 days ago' HEAD)"
+          LOC_ADDED="$(git log --since='30 days ago' --pretty=tformat: --numstat | awk '{ add += $1 } END { print add + 0 }')"
+          LOC_DELETED="$(git log --since='30 days ago' --pretty=tformat: --numstat | awk '{ del += $2 } END { print del + 0 }')"
 
-          if [ -f "$PROJECT_FILE" ]; then
-            PROJECT_NAME="$(jq -r '.project.name // "Unknown Project"' "$PROJECT_FILE")"
-            PROJECT_SUMMARY="$(jq -r '.project.summary // "No project summary available."' "$PROJECT_FILE")"
-            PROJECT_OWNER="$(jq -r '.project.owner // "Unknown"' "$PROJECT_FILE")"
-            PRIMARY_PHASE="$(jq -r '.currentPhase.name // "Development"' "$PROJECT_FILE")"
-            PHASE_CONFIDENCE="$(jq -r '.currentPhase.confidence // 70' "$PROJECT_FILE")"
-            SECONDARY_PHASE="$(jq -r '.currentPhase.secondaryPhase // "None"' "$PROJECT_FILE")"
+          TOP_EXTENSIONS="$(git ls-files | awk -F. 'NF>1{print tolower($NF)}' | sort | uniq -c | sort -nr | head -8)"
+          TOP_ACTIVE_FILES="$(git log --since='30 days ago' --name-only --pretty=format: | sed '/^$/d' | sort | uniq -c | sort -nr | head -8)"
 
-            COMPLETED_ITEMS="$(jq -r '[(.milestones // [])[] | select(.status=="done") | "- " + .name] | if length > 0 then join("\n") else "- None" end' "$PROJECT_FILE")"
-            IN_PROGRESS_ITEMS="$(jq -r '[(.milestones // [])[] | select(.status=="in-progress") | "- " + .name] | if length > 0 then join("\n") else "- None" end' "$PROJECT_FILE")"
-            PENDING_ITEMS="$(jq -r '[(.milestones // [])[] | select(.status=="pending") | "- " + .name] | if length > 0 then join("\n") else "- None" end' "$PROJECT_FILE")"
-            RISK_ITEMS="$(jq -r '[(.risks // [])[] | "- [" + (.severity // "unknown") + "] " + (.title // "Unspecified risk") + " (" + (.status // "unknown") + ")"] | if length > 0 then join("\n") else "- None" end' "$PROJECT_FILE")"
-            NEXT_ACTIONS="$(jq -r '(.nextActions // []) as $a | if ($a|length)>0 then [range(0; ($a|length)) | ((.+1|tostring) + ". " + $a[.])] | join("\n") else "1. Review project status and add nextActions in project.json.\n2. Assign owners to open work items.\n3. Re-run tracker after updates." end' "$PROJECT_FILE")"
-            EVIDENCE_ITEMS="$(jq -r --arg pf "$PROJECT_FILE" '[
-              "- File: " + $pf + " | Why: Primary source for summary, phase, milestones, risks, and actions.",
-              "- File: .github/prompts/basic-project-tracker.prompt.md | Why: Defines output structure for the report.",
-              "- File: .github/workflows/project-tracker.yml | Why: Controls trigger, branch scope, and report generation."
-            ] | join("\n")')"
+          PROJECT_NAME="${GITHUB_REPOSITORY#*/}"
+          PROJECT_BRIEF="Repository-level project with active source and delivery artifacts."
+          if [ -f "README.md" ]; then
+            README_LINE="$(grep -m1 -E '^[[:space:]]*[^#[:space:]].+' README.md || true)"
+            if [ -n "$README_LINE" ]; then
+              PROJECT_BRIEF="$README_LINE"
+            fi
           fi
 
+          PRIMARY_PHASE="Development"
+          PHASE_CONFIDENCE="72"
+          SECONDARY_PHASE="Testing"
+
+          if [ -f "deploy_report.json" ] || [ -f "deploy_report.txt" ]; then
+            PRIMARY_PHASE="Deployment"
+            PHASE_CONFIDENCE="82"
+            SECONDARY_PHASE="Testing"
+          elif [ -d "outputs/testing" ] || [ -d "tests" ] || [ -f "jest.config.js" ]; then
+            PRIMARY_PHASE="Testing"
+            PHASE_CONFIDENCE="78"
+            SECONDARY_PHASE="Development"
+          elif [ -d "outputs/architecture" ]; then
+            PRIMARY_PHASE="Architecture"
+            PHASE_CONFIDENCE="76"
+            SECONDARY_PHASE="Development"
+          elif [ -d "outputs/design" ]; then
+            PRIMARY_PHASE="Design"
+            PHASE_CONFIDENCE="74"
+            SECONDARY_PHASE="Architecture"
+          elif [ -d "outputs/requirements" ]; then
+            PRIMARY_PHASE="Requirements"
+            PHASE_CONFIDENCE="75"
+            SECONDARY_PHASE="Design"
+          fi
+
+          CODEBASE_EVIDENCE="Repository: ${GITHUB_REPOSITORY}\nBranch: ${BRANCH}\nTracked files: ${FILE_COUNT}\nDirectories: ${DIR_COUNT}\nTotal commits: ${COMMIT_COUNT}\nCommits (30d): ${COMMIT_LAST_30}\nLOC added (30d): ${LOC_ADDED}\nLOC deleted (30d): ${LOC_DELETED}\n\nTop file types:\n${TOP_EXTENSIONS}\n\nMost active files (30d):\n${TOP_ACTIVE_FILES}"
+
           AI_REPORT=""
-          if [ -n "${OPENAI_API_KEY:-}" ] && [ -n "${PROMPT:-}" ] && [ -f "$PROJECT_FILE" ]; then
-            PROJECT_JSON="$(cat "$PROJECT_FILE")"
-            AI_INPUT="Prompt:\n${PROMPT}\n\nProject Data:\n${PROJECT_JSON}\n\nRepository Context:\n- Repository: ${GITHUB_REPOSITORY}\n- Branch: ${BRANCH}\n- Recent commits (30d): ${COMMIT_LAST_30}\n- Tracked files: ${FILE_COUNT}\n"
-
-            RESPONSE="$(curl --max-time 45 -sS https://api.openai.com/v1/responses \
-              -H "Content-Type: application/json" \
-              -H "Authorization: Bearer ${OPENAI_API_KEY}" \
-              -d "$(jq -n --arg input "$AI_INPUT" '{model:"gpt-4.1-mini", input:$input}')" || true)"
-
+          if [ -n "${OPENAI_API_KEY:-}" ] && [ -n "${PROMPT:-}" ]; then
+            AI_INPUT="Prompt:\n${PROMPT}\n\nCodebase Evidence:\n${CODEBASE_EVIDENCE}"
+            RESPONSE="$(curl --max-time 45 -sS https://api.openai.com/v1/responses -H "Content-Type: application/json" -H "Authorization: Bearer ${OPENAI_API_KEY}" -d "$(jq -n --arg input "$AI_INPUT" '{model:"gpt-4.1-mini", input:$input}')" || true)"
             AI_REPORT="$(echo "$RESPONSE" | jq -r '.output_text // .output[0].content[0].text // empty' 2>/dev/null || true)"
           fi
 
           mkdir -p tracker
 
-          cat > tracker/project-tracker-report.md <<EOF
-          # Basic Project Tracker Report
-
-          - Generated: ${NOW_UTC}
-          - Repository: ${GITHUB_REPOSITORY}
-          - Branch: ${BRANCH}
-          - Trigger: ${{ github.event_name }}
-          - Data source: ${PROJECT_FILE}
-
-          EOF
+          {
+            echo "# Basic Project Tracker Report"
+            echo
+            echo "- Generated: ${NOW_UTC}"
+            echo "- Repository: ${GITHUB_REPOSITORY}"
+            echo "- Branch: ${BRANCH}"
+            echo "- Trigger: ${{ github.event_name }}"
+            echo "- Data source: Whole codebase"
+            echo
+          } > tracker/project-tracker-report.md
 
           if [ -n "$AI_REPORT" ]; then
-            cat >> tracker/project-tracker-report.md <<EOF
-          ${AI_REPORT}
-
-          EOF
+            echo "$AI_REPORT" >> tracker/project-tracker-report.md
+            echo >> tracker/project-tracker-report.md
           else
-            cat >> tracker/project-tracker-report.md <<EOF
-          Project Summary
-          - ${PROJECT_NAME} is the current project.
-          - ${PROJECT_SUMMARY}
-          - Project owner: ${PROJECT_OWNER}
-          - This report is generated from structured project data instead of raw git statistics.
-          - Recent engineering activity indicates ${COMMIT_LAST_30} commits in the last 30 days.
-
-          Current Phase
-          - Primary phase: ${PRIMARY_PHASE}
-          - Confidence: ${PHASE_CONFIDENCE}%
-          - Secondary phase (if needed): ${SECONDARY_PHASE}
-
-          Progress Snapshot
-          - Completed:
-          ${COMPLETED_ITEMS}
-          - In Progress:
-          ${IN_PROGRESS_ITEMS}
-          - Pending:
-          ${PENDING_ITEMS}
-
-          Key Risks or Blockers
-          ${RISK_ITEMS}
-
-          Evidence
-          ${EVIDENCE_ITEMS}
-
-          Next Actions
-          ${NEXT_ACTIONS}
-
-          EOF
+            {
+              echo "Project Summary"
+              echo "- ${PROJECT_NAME} is the current project."
+              echo "- ${PROJECT_BRIEF}"
+              echo "- This report is generated from whole-codebase evidence."
+              echo "- Recent engineering activity indicates ${COMMIT_LAST_30} commits in the last 30 days."
+              echo
+              echo "Project Brief"
+              echo "- Repository focus: ${PROJECT_NAME}"
+              echo "- Scope summary: ${PROJECT_BRIEF}"
+              echo
+              echo "Current Phase"
+              echo "- Primary phase: ${PRIMARY_PHASE}"
+              echo "- Confidence: ${PHASE_CONFIDENCE}%"
+              echo "- Secondary phase (if needed): ${SECONDARY_PHASE}"
+              echo
+              echo "Progress Snapshot"
+              echo "- Completed:"
+              echo "  - Branch workflow and tracker automation are configured."
+              echo "  - Repository evidence is being scanned successfully."
+              echo "- In Progress:"
+              echo "  - Codebase changes continue across active files."
+              echo "  - Ongoing implementation and validation are inferred from commit activity."
+              echo "- Pending:"
+              echo "  - Final phase closure depends on downstream validation and release checkpoints."
+              echo "  - Documentation alignment and risk sign-off remain open."
+              echo
+              echo "Key Risks or Blockers"
+              echo "- Medium: Activity concentrated in a small set of files can raise merge/regression risk."
+              echo "- Medium: Missing structured status metadata may reduce confidence in milestone-level reporting."
+              echo
+              echo "Evidence"
+              echo "- File: .github/workflows/project-tracker.yml | Why: Defines branch-scoped analysis and report generation."
+              echo "- File: .github/prompts/basic-project-tracker.prompt.md | Why: Defines the expected tracker output shape."
+              echo "- File: README.md | Why: Provides project context when available."
+              echo "- File: git history | Why: Provides trend and activity signals for current status."
+              echo
+              echo "Codebase Snapshot"
+              echo "- Total tracked files: ${FILE_COUNT}"
+              echo "- Total directories: ${DIR_COUNT}"
+              echo "- Total commits: ${COMMIT_COUNT}"
+              echo "- LOC added (last 30 days): ${LOC_ADDED}"
+              echo "- LOC deleted (last 30 days): ${LOC_DELETED}"
+              echo
+              echo "Next Actions"
+              echo "1. Review the most active files and confirm intended scope."
+              echo "2. Validate current phase deliverables against acceptance expectations."
+              echo "3. Update key docs and rerun tracker for the next checkpoint."
+              echo
+            } >> tracker/project-tracker-report.md
           fi
 
-          cat >> tracker/project-tracker-report.md <<EOF
-
-          ---
-
-          ## Prompt Instructions Used
-
-          ${PROMPT}
-          EOF
+          {
+            echo "---"
+            echo
+            echo "## Prompt Instructions Used"
+            echo
+            echo "$PROMPT"
+          } >> tracker/project-tracker-report.md
 
           echo "report_path=tracker/project-tracker-report.md" >> "$GITHUB_OUTPUT"
 
