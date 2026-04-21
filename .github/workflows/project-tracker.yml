@@ -113,28 +113,60 @@ jobs:
 
           BRANCH="${{ steps.branch_cfg.outputs.target_branch }}"
           NOW_UTC="$(date -u '+%Y-%m-%d %H:%M:%S UTC')"
+          PROJECT_FILE="project.json"
 
           FILE_COUNT="$(git ls-files | wc -l | tr -d ' ')"
-          DIR_COUNT="$(find . -type d -not -path '*/.git/*' | wc -l | tr -d ' ')"
-          LOC_ADDED="$(git log --since='30 days ago' --pretty=tformat: --numstat | awk '{ add += $1 } END { print add + 0 }')"
-          LOC_DELETED="$(git log --since='30 days ago' --pretty=tformat: --numstat | awk '{ del += $2 } END { print del + 0 }')"
-          COMMIT_COUNT="$(git rev-list --count HEAD)"
           COMMIT_LAST_30="$(git rev-list --count --since='30 days ago' HEAD)"
 
-          TOP_EXTENSIONS="$(git ls-files | awk -F. 'NF>1{print tolower($NF)}' | sort | uniq -c | sort -nr | head -10)"
-          TOP_ACTIVE_FILES="$(git log --since='30 days ago' --name-only --pretty=format: | sed '/^$/d' | sort | uniq -c | sort -nr | head -10)"
+          if ! command -v jq >/dev/null 2>&1; then
+            sudo apt-get update
+            sudo apt-get install -y jq
+          fi
 
-          PHASE="Development"
-          if [ -d "outputs/deployment" ] || [ -f "deploy_report.json" ] || [ -f "deploy_report.txt" ]; then
-            PHASE="Deployment"
-          elif [ -d "outputs/testing" ] || [ -d "tests" ] || [ -f "jest.config.js" ]; then
-            PHASE="Testing"
-          elif [ -d "outputs/architecture" ]; then
-            PHASE="Architecture"
-          elif [ -d "outputs/design" ]; then
-            PHASE="Design"
-          elif [ -d "outputs/requirements" ]; then
-            PHASE="Requirements"
+          PROJECT_NAME="Unknown Project"
+          PROJECT_SUMMARY="No project summary available."
+          PROJECT_OWNER="Unknown"
+          PRIMARY_PHASE="Development"
+          PHASE_CONFIDENCE="70"
+          SECONDARY_PHASE="None"
+          COMPLETED_ITEMS="- None"
+          IN_PROGRESS_ITEMS="- None"
+          PENDING_ITEMS="- None"
+          RISK_ITEMS="- None"
+          NEXT_ACTIONS=$'1. Define project milestones in project.json.\n2. Add risks and blockers in project.json.\n3. Re-run workflow to generate full project tracker report.'
+          EVIDENCE_ITEMS="- File: ${PROJECT_FILE} | Why: Not found, so report used fallback values."$'\n'"- File: .github/workflows/project-tracker.yml | Why: Contains tracker generation logic."
+
+          if [ -f "$PROJECT_FILE" ]; then
+            PROJECT_NAME="$(jq -r '.project.name // "Unknown Project"' "$PROJECT_FILE")"
+            PROJECT_SUMMARY="$(jq -r '.project.summary // "No project summary available."' "$PROJECT_FILE")"
+            PROJECT_OWNER="$(jq -r '.project.owner // "Unknown"' "$PROJECT_FILE")"
+            PRIMARY_PHASE="$(jq -r '.currentPhase.name // "Development"' "$PROJECT_FILE")"
+            PHASE_CONFIDENCE="$(jq -r '.currentPhase.confidence // 70' "$PROJECT_FILE")"
+            SECONDARY_PHASE="$(jq -r '.currentPhase.secondaryPhase // "None"' "$PROJECT_FILE")"
+
+            COMPLETED_ITEMS="$(jq -r '[(.milestones // [])[] | select(.status=="done") | "- " + .name] | if length > 0 then join("\n") else "- None" end' "$PROJECT_FILE")"
+            IN_PROGRESS_ITEMS="$(jq -r '[(.milestones // [])[] | select(.status=="in-progress") | "- " + .name] | if length > 0 then join("\n") else "- None" end' "$PROJECT_FILE")"
+            PENDING_ITEMS="$(jq -r '[(.milestones // [])[] | select(.status=="pending") | "- " + .name] | if length > 0 then join("\n") else "- None" end' "$PROJECT_FILE")"
+            RISK_ITEMS="$(jq -r '[(.risks // [])[] | "- [" + (.severity // "unknown") + "] " + (.title // "Unspecified risk") + " (" + (.status // "unknown") + ")"] | if length > 0 then join("\n") else "- None" end' "$PROJECT_FILE")"
+            NEXT_ACTIONS="$(jq -r '(.nextActions // []) as $a | if ($a|length)>0 then [range(0; ($a|length)) | ((.+1|tostring) + ". " + $a[.])] | join("\n") else "1. Review project status and add nextActions in project.json.\n2. Assign owners to open work items.\n3. Re-run tracker after updates." end' "$PROJECT_FILE")"
+            EVIDENCE_ITEMS="$(jq -r --arg pf "$PROJECT_FILE" '[
+              "- File: " + $pf + " | Why: Primary source for summary, phase, milestones, risks, and actions.",
+              "- File: .github/prompts/basic-project-tracker.prompt.md | Why: Defines output structure for the report.",
+              "- File: .github/workflows/project-tracker.yml | Why: Controls trigger, branch scope, and report generation."
+            ] | join("\n")')"
+          fi
+
+          AI_REPORT=""
+          if [ -n "${OPENAI_API_KEY:-}" ] && [ -n "${PROMPT:-}" ] && [ -f "$PROJECT_FILE" ]; then
+            PROJECT_JSON="$(cat "$PROJECT_FILE")"
+            AI_INPUT="Prompt:\n${PROMPT}\n\nProject Data:\n${PROJECT_JSON}\n\nRepository Context:\n- Repository: ${GITHUB_REPOSITORY}\n- Branch: ${BRANCH}\n- Recent commits (30d): ${COMMIT_LAST_30}\n- Tracked files: ${FILE_COUNT}\n"
+
+            RESPONSE="$(curl --max-time 45 -sS https://api.openai.com/v1/responses \
+              -H "Content-Type: application/json" \
+              -H "Authorization: Bearer ${OPENAI_API_KEY}" \
+              -d "$(jq -n --arg input "$AI_INPUT" '{model:"gpt-4.1-mini", input:$input}')" || true)"
+
+            AI_REPORT="$(echo "$RESPONSE" | jq -r '.output_text // .output[0].content[0].text // empty' 2>/dev/null || true)"
           fi
 
           mkdir -p tracker
@@ -146,33 +178,50 @@ jobs:
           - Repository: ${GITHUB_REPOSITORY}
           - Branch: ${BRANCH}
           - Trigger: ${{ github.event_name }}
+          - Data source: ${PROJECT_FILE}
 
-          ## Current Phase
+          EOF
 
-          - Primary phase: ${PHASE}
+          if [ -n "$AI_REPORT" ]; then
+            cat >> tracker/project-tracker-report.md <<EOF
+          ${AI_REPORT}
 
-          ## Codebase Snapshot
+          EOF
+          else
+            cat >> tracker/project-tracker-report.md <<EOF
+          Project Summary
+          - ${PROJECT_NAME} is the current project.
+          - ${PROJECT_SUMMARY}
+          - Project owner: ${PROJECT_OWNER}
+          - This report is generated from structured project data instead of raw git statistics.
+          - Recent engineering activity indicates ${COMMIT_LAST_30} commits in the last 30 days.
 
-          - Total tracked files: ${FILE_COUNT}
-          - Total directories: ${DIR_COUNT}
-          - Total commits: ${COMMIT_COUNT}
-          - Commits (last 30 days): ${COMMIT_LAST_30}
-          - LOC added (last 30 days): ${LOC_ADDED}
-          - LOC deleted (last 30 days): ${LOC_DELETED}
+          Current Phase
+          - Primary phase: ${PRIMARY_PHASE}
+          - Confidence: ${PHASE_CONFIDENCE}%
+          - Secondary phase (if needed): ${SECONDARY_PHASE}
 
-          ## Top File Types
+          Progress Snapshot
+          - Completed:
+          ${COMPLETED_ITEMS}
+          - In Progress:
+          ${IN_PROGRESS_ITEMS}
+          - Pending:
+          ${PENDING_ITEMS}
 
-          ${TOP_EXTENSIONS}
+          Key Risks or Blockers
+          ${RISK_ITEMS}
 
-          ## Most Active Files (last 30 days)
+          Evidence
+          ${EVIDENCE_ITEMS}
 
-          ${TOP_ACTIVE_FILES}
+          Next Actions
+          ${NEXT_ACTIONS}
 
-          ## Suggested Next Actions
+          EOF
+          fi
 
-          1. Review most active files for hotspots and stabilize changes.
-          2. Confirm current phase artifacts are complete for this branch.
-          3. Plan next weekly tracking checkpoint and compare trend metrics.
+          cat >> tracker/project-tracker-report.md <<EOF
 
           ---
 
@@ -182,14 +231,6 @@ jobs:
           EOF
 
           echo "report_path=tracker/project-tracker-report.md" >> "$GITHUB_OUTPUT"
-          AI_SUMMARY=$(curl -s https://api.openai.com/v1/responses \
-            -H "Content-Type: application/json" \
-            -H "Authorization: Bearer $OPENAI_API_KEY" \
-            -d "$(jq -n \
-              --arg prompt "$PROMPT" \
-              --arg stats "Files: $FILE_COUNT, Commits: $COMMIT_COUNT, Phase: $PHASE" \
-              '{model:"gpt-4.1-mini", input: ($prompt + "\n\n" + $stats)}')" \
-            | jq -r '.output_text // .output[0].content[0].text // "No response"')
 
       - name: Publish report to workflow summary
         if: ${{ steps.branch_cfg.outputs.should_run == 'true' }}
