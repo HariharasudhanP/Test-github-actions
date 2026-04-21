@@ -83,6 +83,25 @@ jobs:
           fetch-depth: 0
           ref: ${{ steps.branch_cfg.outputs.target_branch }}
 
+      - name: Load prompt
+        if: ${{ steps.branch_cfg.outputs.should_run == 'true' }}
+        id: prompt
+        shell: bash
+        run: |
+          set -euo pipefail
+          PROMPT_FILE=".github/prompts/basic-project-tracker.prompt.md"
+          if [ ! -f "$PROMPT_FILE" ]; then
+            echo "Prompt file not found at $PROMPT_FILE — skipping prompt load."
+            echo "PROMPT=" >> "$GITHUB_ENV"
+          else
+            {
+              echo "PROMPT<<EOF"
+              cat "$PROMPT_FILE"
+              echo "EOF"
+            } >> "$GITHUB_ENV"
+            echo "Prompt loaded successfully from $PROMPT_FILE"
+          fi
+
       - name: Analyze codebase
         if: ${{ steps.branch_cfg.outputs.should_run == 'true' }}
         id: analysis
@@ -152,6 +171,12 @@ jobs:
           1. Review most active files for hotspots and stabilize changes.
           2. Confirm current phase artifacts are complete for this branch.
           3. Plan next weekly tracking checkpoint and compare trend metrics.
+
+          ---
+
+          ## Prompt Instructions Used
+
+          ${PROMPT}
           EOF
 
           echo "report_path=tracker/project-tracker-report.md" >> "$GITHUB_OUTPUT"
