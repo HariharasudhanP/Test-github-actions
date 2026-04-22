@@ -171,8 +171,24 @@ jobs:
             AI_INPUT="Prompt:\n${PROMPT}\n\nCodebase Evidence:\n${CODEBASE_EVIDENCE}"
             AI_RESPONSE_FILE="$(mktemp)"
             AI_REQUEST_FILE="$(mktemp)"
+            AI_INPUT_FILE="$(mktemp)"
 
-            if ! jq -n --arg input "$AI_INPUT" '{model:"gpt-4.1-mini", input:$input}' > "$AI_REQUEST_FILE"; then
+            printf '%s' "$AI_INPUT" > "$AI_INPUT_FILE"
+
+            if ! jq -n --rawfile inputText "$AI_INPUT_FILE" '{
+              model: "gpt-4.1-mini",
+              input: [
+                {
+                  role: "user",
+                  content: [
+                    {
+                      type: "input_text",
+                      text: $inputText
+                    }
+                  ]
+                }
+              ]
+            }' > "$AI_REQUEST_FILE"; then
               AI_FAILURE_REASON="Failed to build OpenAI request JSON."
             else
               AI_STATUS="$(curl --max-time 45 -sS -o "$AI_RESPONSE_FILE" -w "%{http_code}" https://api.openai.com/v1/responses -H "Content-Type: application/json" -H "Authorization: Bearer ${OPENAI_API_KEY}" --data-binary "@${AI_REQUEST_FILE}" || true)"
