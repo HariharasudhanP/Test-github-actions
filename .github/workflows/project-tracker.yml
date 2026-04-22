@@ -266,14 +266,6 @@ jobs:
             } >> tracker/project-tracker-report.md
           fi
 
-          {
-            echo "---"
-            echo
-            echo "## Prompt Instructions Used"
-            echo
-            echo "$PROMPT"
-          } >> tracker/project-tracker-report.md
-
           echo "report_path=tracker/project-tracker-report.md" >> "$GITHUB_OUTPUT"
 
       - name: Publish report to workflow summary
