@@ -132,7 +132,7 @@ jobs:
               PROJECT_BRIEF="$README_LINE"
             fi
           fi
-
+ 
           PRIMARY_PHASE="Development"
           PHASE_CONFIDENCE="72"
           SECONDARY_PHASE="Testing"
