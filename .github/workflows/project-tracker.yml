@@ -162,10 +162,29 @@ jobs:
           CODEBASE_EVIDENCE="Repository: ${GITHUB_REPOSITORY}\nBranch: ${BRANCH}\nTracked files: ${FILE_COUNT}\nDirectories: ${DIR_COUNT}\nTotal commits: ${COMMIT_COUNT}\nCommits (30d): ${COMMIT_LAST_30}\nLOC added (30d): ${LOC_ADDED}\nLOC deleted (30d): ${LOC_DELETED}\n\nTop file types:\n${TOP_EXTENSIONS}\n\nMost active files (30d):\n${TOP_ACTIVE_FILES}"
 
           AI_REPORT=""
-          if [ -n "${OPENAI_API_KEY:-}" ] && [ -n "${PROMPT:-}" ]; then
+          AI_FAILURE_REASON=""
+          if [ -z "${OPENAI_API_KEY:-}" ]; then
+            AI_FAILURE_REASON="OPENAI_API_KEY secret is not configured."
+          elif [ -z "${PROMPT:-}" ]; then
+            AI_FAILURE_REASON="Prompt content is empty (.github/prompts/basic-project-tracker.prompt.md not found or blank)."
+          else
             AI_INPUT="Prompt:\n${PROMPT}\n\nCodebase Evidence:\n${CODEBASE_EVIDENCE}"
-            RESPONSE="$(curl --max-time 45 -sS https://api.openai.com/v1/responses -H "Content-Type: application/json" -H "Authorization: Bearer ${OPENAI_API_KEY}" -d "$(jq -n --arg input "$AI_INPUT" '{model:"gpt-4.1-mini", input:$input}')" || true)"
-            AI_REPORT="$(echo "$RESPONSE" | jq -r '.output_text // .output[0].content[0].text // empty' 2>/dev/null || true)"
+            AI_RESPONSE_FILE="$(mktemp)"
+            AI_STATUS="$(curl --max-time 45 -sS -o "$AI_RESPONSE_FILE" -w "%{http_code}" https://api.openai.com/v1/responses -H "Content-Type: application/json" -H "Authorization: Bearer ${OPENAI_API_KEY}" -d "$(jq -n --arg input "$AI_INPUT" '{model:"gpt-4.1-mini", input:$input}')" || true)"
+
+            if [ "$AI_STATUS" -ge 200 ] && [ "$AI_STATUS" -lt 300 ]; then
+              AI_REPORT="$(jq -r '(.output_text // ([.output[]?.content[]? | .text? // empty] | map(select(length > 0)) | join("\n")) // empty)' "$AI_RESPONSE_FILE" 2>/dev/null || true)"
+              if [ -z "$AI_REPORT" ]; then
+                AI_FAILURE_REASON="OpenAI returned HTTP ${AI_STATUS} but no text output."
+              fi
+            else
+              AI_ERROR_MSG="$(jq -r '.error.message // .message // empty' "$AI_RESPONSE_FILE" 2>/dev/null || true)"
+              if [ -n "$AI_ERROR_MSG" ]; then
+                AI_FAILURE_REASON="OpenAI request failed with HTTP ${AI_STATUS}: ${AI_ERROR_MSG}"
+              else
+                AI_FAILURE_REASON="OpenAI request failed with HTTP ${AI_STATUS}."
+              fi
+            fi
           fi
 
           mkdir -p tracker
@@ -189,6 +208,9 @@ jobs:
               echo "## AI Report Unavailable"
               echo
               echo "OpenAI output was empty or unavailable for this run."
+              if [ -n "$AI_FAILURE_REASON" ]; then
+                echo "Reason: ${AI_FAILURE_REASON}"
+              fi
               echo "The report below contains only collected evidence and derived phase signals."
               echo
               echo "## Derived Phase Signals"
