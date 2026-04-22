@@ -186,53 +186,18 @@ jobs:
             echo >> tracker/project-tracker-report.md
           else
             {
-              echo "Project Summary"
-              echo "- ${PROJECT_NAME} is the current project."
-              echo "- ${PROJECT_BRIEF}"
-              echo "- This report is generated from whole-codebase evidence."
-              echo "- Recent engineering activity indicates ${COMMIT_LAST_30} commits in the last 30 days."
+              echo "## AI Report Unavailable"
               echo
-              echo "Project Brief"
-              echo "- Repository focus: ${PROJECT_NAME}"
-              echo "- Scope summary: ${PROJECT_BRIEF}"
+              echo "OpenAI output was empty or unavailable for this run."
+              echo "The report below contains only collected evidence and derived phase signals."
               echo
-              echo "Current Phase"
+              echo "## Derived Phase Signals"
               echo "- Primary phase: ${PRIMARY_PHASE}"
               echo "- Confidence: ${PHASE_CONFIDENCE}%"
-              echo "- Secondary phase (if needed): ${SECONDARY_PHASE}"
+              echo "- Secondary phase: ${SECONDARY_PHASE}"
               echo
-              echo "Progress Snapshot"
-              echo "- Completed:"
-              echo "  - Branch workflow and tracker automation are configured."
-              echo "  - Repository evidence is being scanned successfully."
-              echo "- In Progress:"
-              echo "  - Codebase changes continue across active files."
-              echo "  - Ongoing implementation and validation are inferred from commit activity."
-              echo "- Pending:"
-              echo "  - Final phase closure depends on downstream validation and release checkpoints."
-              echo "  - Documentation alignment and risk sign-off remain open."
-              echo
-              echo "Key Risks or Blockers"
-              echo "- Medium: Activity concentrated in a small set of files can raise merge/regression risk."
-              echo "- Medium: Missing structured status metadata may reduce confidence in milestone-level reporting."
-              echo
-              echo "Evidence"
-              echo "- File: .github/workflows/project-tracker.yml | Why: Defines branch-scoped analysis and report generation."
-              echo "- File: .github/prompts/basic-project-tracker.prompt.md | Why: Defines the expected tracker output shape."
-              echo "- File: README.md | Why: Provides project context when available."
-              echo "- File: git history | Why: Provides trend and activity signals for current status."
-              echo
-              echo "Codebase Snapshot"
-              echo "- Total tracked files: ${FILE_COUNT}"
-              echo "- Total directories: ${DIR_COUNT}"
-              echo "- Total commits: ${COMMIT_COUNT}"
-              echo "- LOC added (last 30 days): ${LOC_ADDED}"
-              echo "- LOC deleted (last 30 days): ${LOC_DELETED}"
-              echo
-              echo "Next Actions"
-              echo "1. Review the most active files and confirm intended scope."
-              echo "2. Validate current phase deliverables against acceptance expectations."
-              echo "3. Update key docs and rerun tracker for the next checkpoint."
+              echo "## Codebase Evidence"
+              printf "%b\n" "$CODEBASE_EVIDENCE"
               echo
             } >> tracker/project-tracker-report.md
           fi
@@ -390,12 +355,13 @@ jobs:
             exit 1
           fi
 
-          BODY_TEXT="Basic Project Tracker Report"
-          BODY_TEXT="${BODY_TEXT}\n\nRepository: ${{ github.repository }}"
-          BODY_TEXT="${BODY_TEXT}\nBranch: ${{ steps.branch_cfg.outputs.target_branch }}"
-          BODY_TEXT="${BODY_TEXT}\nTriggered by: ${{ github.actor }} (${{ github.event_name }})"
-          BODY_TEXT="${BODY_TEXT}\nRun: ${REPORT_URL}"
-          BODY_TEXT="${BODY_TEXT}\n\n{noformat}\n${REPORT_CONTENT}\n{noformat}"
+          BODY_TEXT="$(printf 'Basic Project Tracker Report\n\nRepository: %s\nBranch: %s\nTriggered by: %s (%s)\nRun: %s\n\n{noformat}\n%s\n{noformat}\n' \
+            '${{ github.repository }}' \
+            '${{ steps.branch_cfg.outputs.target_branch }}' \
+            '${{ github.actor }}' \
+            '${{ github.event_name }}' \
+            "$REPORT_URL" \
+            "$REPORT_CONTENT")"
 
           COMMENT_BODY="$(jq -n --arg body "$BODY_TEXT" '{ "body": $body }')"
 
