@@ -14,10 +14,6 @@ on:
         description: Comma-separated allowed branches (for example, main,develop,release/*)
         required: false
         default: main
-      notification_email:
-        description: Email to send report to (optional, overrides GitHub profile email)
-        required: false
-        default: ''
   schedule:
     - cron: '0 2 * * 5'
 
@@ -264,52 +260,99 @@ jobs:
           name: basic-project-tracker-${{ github.run_number }}
           path: ${{ steps.analysis.outputs.report_path }}
 
-      - name: Resolve notification email
+      - name: Send Teams notification
         if: ${{ steps.branch_cfg.outputs.should_run == 'true' }}
-        id: get_email
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          EVENT_NAME: ${{ github.event_name }}
-          PUSHER_EMAIL: ${{ github.event.pusher.email }}
-          ACTOR: ${{ github.actor }}
-          OVERRIDE_EMAIL: ${{ github.event_name == 'workflow_dispatch' && inputs.notification_email || '' }}
+          TEAMS_WEBHOOK_URL: ${{ secrets.TEAMS_WEBHOOK_URL }}
         shell: bash
         run: |
           set -euo pipefail
-          RESOLVED_EMAIL=""
 
-          if [ -n "${OVERRIDE_EMAIL}" ]; then
-            RESOLVED_EMAIL="${OVERRIDE_EMAIL}"
-          elif [ "${EVENT_NAME}" = "push" ] && [ -n "${PUSHER_EMAIL}" ]; then
-            RESOLVED_EMAIL="${PUSHER_EMAIL}"
+          if [ -z "${TEAMS_WEBHOOK_URL:-}" ]; then
+            echo "TEAMS_WEBHOOK_URL is not configured. Skipping Teams notification."
+            exit 0
           fi
 
-          if [ -z "${RESOLVED_EMAIL}" ]; then
-            RESOLVED_EMAIL="$(curl -s -H "Authorization: Bearer ${GITHUB_TOKEN}" \
-              "https://api.github.com/users/${ACTOR}" | jq -r '.email // empty')"
+          REPORT_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          PAYLOAD="$(jq -n \
+            --arg title "Basic Project Tracker Report" \
+            --arg repo "${{ github.repository }}" \
+            --arg branch "${{ steps.branch_cfg.outputs.target_branch }}" \
+            --arg actor "${{ github.actor }}" \
+            --arg trigger "${{ github.event_name }}" \
+            --arg reportUrl "$REPORT_URL" \
+            '{
+              "@type": "MessageCard",
+              "@context": "https://schema.org/extensions",
+              summary: $title,
+              themeColor: "0078D7",
+              title: $title,
+              sections: [
+                {
+                  facts: [
+                    { name: "Repository", value: $repo },
+                    { name: "Branch", value: $branch },
+                    { name: "Triggered By", value: $actor },
+                    { name: "Trigger", value: $trigger }
+                  ],
+                  text: "The Basic Project Tracker workflow completed successfully."
+                }
+              ],
+              potentialAction: [
+                {
+                  "@type": "OpenUri",
+                  name: "View Run",
+                  targets: [
+                    { os: "default", uri: $reportUrl }
+                  ]
+                }
+              ]
+            }')"
+
+          curl --fail --show-error --silent \
+            -H "Content-Type: application/json" \
+            -d "$PAYLOAD" \
+            "$TEAMS_WEBHOOK_URL"
+
+      - name: Push summary to Jira Epic
+        if: ${{ steps.branch_cfg.outputs.should_run == 'true' }}
+        env:
+          JIRA_BASE_URL: ${{ secrets.JIRA_BASE_URL }}
+          JIRA_USER_EMAIL: ${{ secrets.JIRA_USER_EMAIL }}
+          JIRA_API_TOKEN: ${{ secrets.JIRA_API_TOKEN }}
+          JIRA_EPIC_KEY: ${{ secrets.JIRA_EPIC_KEY }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [ -z "${JIRA_BASE_URL:-}" ] || [ -z "${JIRA_USER_EMAIL:-}" ] || \
+             [ -z "${JIRA_API_TOKEN:-}" ] || [ -z "${JIRA_EPIC_KEY:-}" ]; then
+            echo "One or more Jira secrets are not configured. Skipping Jira comment."
+            exit 0
           fi
 
-          echo "email=${RESOLVED_EMAIL}" >> "$GITHUB_OUTPUT"
+          REPORT_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          REPORT_CONTENT="$(head -60 "${{ steps.analysis.outputs.report_path }}")"
 
-      - name: Send report email
-        if: ${{ steps.branch_cfg.outputs.should_run == 'true' && steps.get_email.outputs.email != '' }}
-        uses: dawidd6/action-send-mail@v3
-        with:
-          server_address: smtp.office365.com
-          server_port: 587
-          secure: false
-          username: ${{ secrets.MAIL_USERNAME }}
-          password: ${{ secrets.MAIL_PASSWORD }}
-          subject: "Project Tracker Report - ${{ github.ref_name }} (#${{ github.run_number }})"
-          to: ${{ steps.get_email.outputs.email }}
-          from: GitHub Actions <${{ secrets.MAIL_USERNAME }}>
-          body: |
-            Hi ${{ github.actor }},
+          BODY_TEXT="Basic Project Tracker Report"
+          BODY_TEXT="${BODY_TEXT}\n\nRepository: ${{ github.repository }}"
+          BODY_TEXT="${BODY_TEXT}\nBranch: ${{ steps.branch_cfg.outputs.target_branch }}"
+          BODY_TEXT="${BODY_TEXT}\nTriggered by: ${{ github.actor }} (${{ github.event_name }})"
+          BODY_TEXT="${BODY_TEXT}\nRun: ${REPORT_URL}"
+          BODY_TEXT="${BODY_TEXT}\n\n{noformat}\n${REPORT_CONTENT}\n{noformat}"
 
-            Your Basic Project Tracker report has been generated for branch: ${{ steps.branch_cfg.outputs.target_branch }}
-            Triggered by: ${{ github.event_name }}
+          COMMENT_BODY="$(jq -n --arg body "$BODY_TEXT" '{ "body": $body }')"
 
-            View the full report and artifact at:
-            ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          HTTP_STATUS="$(curl -s -o /dev/null -w "%{http_code}" \
+            -X POST \
+            -u "${JIRA_USER_EMAIL}:${JIRA_API_TOKEN}" \
+            -H "Content-Type: application/json" \
+            -d "$COMMENT_BODY" \
+            "${JIRA_BASE_URL}/rest/api/2/issue/${JIRA_EPIC_KEY}/comment")"
 
-            This is an automated message from GitHub Actions.
+          if [ "$HTTP_STATUS" -ge 200 ] && [ "$HTTP_STATUS" -lt 300 ]; then
+            echo "Jira comment posted to ${JIRA_EPIC_KEY} (HTTP ${HTTP_STATUS})."
+          else
+            echo "Jira comment failed with HTTP ${HTTP_STATUS}. Check credentials and Epic key."
+            exit 1
+          fi
