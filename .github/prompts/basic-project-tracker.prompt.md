@@ -17,6 +17,8 @@ Create a clear and basic tracker update that answers:
 - What is blocked or at risk
 - What should happen next
 
+Before drafting the output, first scan the whole repository and infer what the project is about from code, configuration, docs, workflows, and outputs.
+
 ## Input Sources
 
 Use only repository evidence such as:
@@ -28,6 +30,7 @@ Use only repository evidence such as:
 - Requirement, design, architecture, development, and deployment documents
 
 Do not assume context that is not visible.
+Do not rely on a single file to infer project purpose.
 
 ## Phase Model
 
@@ -44,6 +47,7 @@ Do not assume context that is not visible.
 
 - Keep the output simple and concise
 - Use only verifiable evidence
+- Read the full codebase before concluding project purpose or phase
 - If evidence is mixed, provide top 2 likely phases with confidence
 - Highlight major gaps only
 - No deep code review, no test critique, no style feedback
