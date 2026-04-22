@@ -336,10 +336,45 @@ jobs:
             JIRA_SITE_URL="${JIRA_SITE_URL%%/browse/*}"
           fi
 
+          RAW_EPIC_KEY="${JIRA_EPIC_KEY}"
+          NORMALIZED_EPIC_KEY="${RAW_EPIC_KEY##*/}"
+          NORMALIZED_EPIC_KEY="${NORMALIZED_EPIC_KEY%%\?*}"
+          NORMALIZED_EPIC_KEY="${NORMALIZED_EPIC_KEY%%#*}"
+          NORMALIZED_EPIC_KEY="$(echo "$NORMALIZED_EPIC_KEY" | xargs)"
+
+          if [ -z "$NORMALIZED_EPIC_KEY" ]; then
+            echo "JIRA_EPIC_KEY is empty after normalization."
+            exit 1
+          fi
+
+          if [[ "$NORMALIZED_EPIC_KEY" != *-* ]]; then
+            echo "JIRA_EPIC_KEY looks invalid: '$NORMALIZED_EPIC_KEY'. Expected format like ABC-123."
+            exit 1
+          fi
+
           REPORT_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
           REPORT_CONTENT="$(head -60 "${{ steps.analysis.outputs.report_path }}")"
 
-          ISSUE_LOOKUP_URL="${JIRA_SITE_URL}/rest/api/3/issue/${JIRA_EPIC_KEY}?fields=summary"
+          MYSELF_URL="${JIRA_SITE_URL}/rest/api/3/myself"
+          MYSELF_BODY_FILE="$(mktemp)"
+          MYSELF_STATUS="$(curl -sS -o "$MYSELF_BODY_FILE" -w "%{http_code}" \
+            -u "${JIRA_USER_EMAIL}:${JIRA_API_TOKEN}" \
+            -H "Accept: application/json" \
+            "$MYSELF_URL")"
+
+          if [ "$MYSELF_STATUS" -lt 200 ] || [ "$MYSELF_STATUS" -ge 300 ]; then
+            echo "Jira auth check failed with HTTP ${MYSELF_STATUS}."
+            echo "Auth URL: ${MYSELF_URL}"
+            echo "Response body:"
+            cat "$MYSELF_BODY_FILE"
+            exit 1
+          fi
+
+          AUTH_USER="$(jq -r '.emailAddress // .displayName // "unknown"' "$MYSELF_BODY_FILE" 2>/dev/null || echo "unknown")"
+          echo "Jira auth check passed for: ${AUTH_USER}"
+          echo "Using Jira issue key: ${NORMALIZED_EPIC_KEY}"
+
+          ISSUE_LOOKUP_URL="${JIRA_SITE_URL}/rest/api/3/issue/${NORMALIZED_EPIC_KEY}?fields=summary"
           LOOKUP_BODY_FILE="$(mktemp)"
           LOOKUP_STATUS="$(curl -sS -o "$LOOKUP_BODY_FILE" -w "%{http_code}" \
             -u "${JIRA_USER_EMAIL}:${JIRA_API_TOKEN}" \
@@ -351,6 +386,7 @@ jobs:
             echo "Lookup URL: ${ISSUE_LOOKUP_URL}"
             echo "Response body:"
             cat "$LOOKUP_BODY_FILE"
+            echo "Tip: confirm the API user can view issue ${NORMALIZED_EPIC_KEY} in Jira."
             exit 1
           fi
 
@@ -363,7 +399,7 @@ jobs:
 
           COMMENT_BODY="$(jq -n --arg body "$BODY_TEXT" '{ "body": $body }')"
 
-          COMMENT_URL="${JIRA_SITE_URL}/rest/api/2/issue/${JIRA_EPIC_KEY}/comment"
+          COMMENT_URL="${JIRA_SITE_URL}/rest/api/2/issue/${NORMALIZED_EPIC_KEY}/comment"
           COMMENT_RESPONSE_FILE="$(mktemp)"
           HTTP_STATUS="$(curl -sS -o "$COMMENT_RESPONSE_FILE" -w "%{http_code}" \
             -X POST \
@@ -373,7 +409,7 @@ jobs:
             "$COMMENT_URL")"
 
           if [ "$HTTP_STATUS" -ge 200 ] && [ "$HTTP_STATUS" -lt 300 ]; then
-            echo "Jira comment posted to ${JIRA_EPIC_KEY} (HTTP ${HTTP_STATUS})."
+            echo "Jira comment posted to ${NORMALIZED_EPIC_KEY} (HTTP ${HTTP_STATUS})."
           else
             echo "Jira comment failed with HTTP ${HTTP_STATUS}."
             echo "Comment URL: ${COMMENT_URL}"
