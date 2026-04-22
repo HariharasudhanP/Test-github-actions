@@ -269,20 +269,27 @@ jobs:
         id: get_email
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          EVENT_NAME: ${{ github.event_name }}
+          PUSHER_EMAIL: ${{ github.event.pusher.email }}
+          ACTOR: ${{ github.actor }}
+          OVERRIDE_EMAIL: ${{ github.event_name == 'workflow_dispatch' && inputs.notification_email || '' }}
         shell: bash
         run: |
           set -euo pipefail
-          OVERRIDE_EMAIL="${{ inputs.notification_email || '' }}"
-          if [ -n "$OVERRIDE_EMAIL" ]; then
-            echo "email=$OVERRIDE_EMAIL" >> "$GITHUB_OUTPUT"
-          elif [ "${{ github.event_name }}" = "push" ]; then
-            PUSH_EMAIL="${{ github.event.pusher.email }}"
-            echo "email=${PUSH_EMAIL}" >> "$GITHUB_OUTPUT"
-          else
-            PROFILE_EMAIL="$(curl -s -H "Authorization: Bearer ${GITHUB_TOKEN}" \
-              "https://api.github.com/users/${{ github.actor }}" | jq -r '.email // empty')"
-            echo "email=${PROFILE_EMAIL}" >> "$GITHUB_OUTPUT"
+          RESOLVED_EMAIL=""
+
+          if [ -n "${OVERRIDE_EMAIL}" ]; then
+            RESOLVED_EMAIL="${OVERRIDE_EMAIL}"
+          elif [ "${EVENT_NAME}" = "push" ] && [ -n "${PUSHER_EMAIL}" ]; then
+            RESOLVED_EMAIL="${PUSHER_EMAIL}"
           fi
+
+          if [ -z "${RESOLVED_EMAIL}" ]; then
+            RESOLVED_EMAIL="$(curl -s -H "Authorization: Bearer ${GITHUB_TOKEN}" \
+              "https://api.github.com/users/${ACTOR}" | jq -r '.email // empty')"
+          fi
+
+          echo "email=${RESOLVED_EMAIL}" >> "$GITHUB_OUTPUT"
 
       - name: Send report email
         if: ${{ steps.branch_cfg.outputs.should_run == 'true' && steps.get_email.outputs.email != '' }}
