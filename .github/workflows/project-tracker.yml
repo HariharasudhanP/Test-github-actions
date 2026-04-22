@@ -168,28 +168,41 @@ jobs:
           elif [ -z "${PROMPT:-}" ]; then
             AI_FAILURE_REASON="Prompt content is empty (.github/prompts/basic-project-tracker.prompt.md not found or blank)."
           else
-            AI_INPUT="Prompt:\n${PROMPT}\n\nCodebase Evidence:\n${CODEBASE_EVIDENCE}"
             AI_RESPONSE_FILE="$(mktemp)"
             AI_REQUEST_FILE="$(mktemp)"
-            AI_INPUT_FILE="$(mktemp)"
+            # Keep payload bounded to reduce risk of proxy/body truncation leading to invalid JSON parse errors.
+            PROMPT_TRUNCATED="$(printf '%s' "$PROMPT" | head -c 12000)"
+            EVIDENCE_TRUNCATED="$(printf '%s' "$CODEBASE_EVIDENCE" | head -c 24000)"
 
-            printf '%s' "$AI_INPUT" > "$AI_INPUT_FILE"
-
-            if ! jq -n --rawfile inputText "$AI_INPUT_FILE" '{
-              model: "gpt-4.1-mini",
-              input: [
-                {
-                  role: "user",
-                  content: [
-                    {
-                      type: "input_text",
-                      text: $inputText
-                    }
-                  ]
-                }
-              ]
-            }' > "$AI_REQUEST_FILE"; then
+            if ! jq -n \
+              --arg promptText "$PROMPT_TRUNCATED" \
+              --arg evidenceText "$EVIDENCE_TRUNCATED" \
+              '{
+                model: "gpt-4.1-mini",
+                input: [
+                  {
+                    role: "system",
+                    content: [
+                      {
+                        type: "input_text",
+                        text: $promptText
+                      }
+                    ]
+                  },
+                  {
+                    role: "user",
+                    content: [
+                      {
+                        type: "input_text",
+                        text: ("Codebase Evidence:\n" + $evidenceText)
+                      }
+                    ]
+                  }
+                ]
+              }' > "$AI_REQUEST_FILE"; then
               AI_FAILURE_REASON="Failed to build OpenAI request JSON."
+            elif ! jq -e . "$AI_REQUEST_FILE" >/dev/null 2>&1; then
+              AI_FAILURE_REASON="OpenAI request JSON validation failed before sending."
             else
               AI_STATUS="$(curl --max-time 45 -sS -o "$AI_RESPONSE_FILE" -w "%{http_code}" https://api.openai.com/v1/responses -H "Content-Type: application/json" -H "Authorization: Bearer ${OPENAI_API_KEY}" --data-binary "@${AI_REQUEST_FILE}" || true)"
 
