@@ -177,20 +177,17 @@ jobs:
           else
             AI_RESPONSE_FILE="$(mktemp)"
             AI_REQUEST_FILE="$(mktemp)"
+            OPENAI_URL="https://api.openai.com/v1/chat/completions"
             if [ "${OPENAI_DEBUG_MINIMAL:-false}" = "true" ]; then
               if ! jq -n '{
-                model: "gpt-4.1-mini",
-                input: [
+                model: "gpt-4o-mini",
+                messages: [
                   {
                     role: "user",
-                    content: [
-                      {
-                        type: "input_text",
-                        text: "hello"
-                      }
-                    ]
+                    content: "hello"
                   }
-                ]
+                ],
+                temperature: 0
               }' > "$AI_REQUEST_FILE"; then
                 AI_FAILURE_REASON="Failed to build minimal OpenAI request JSON."
               elif ! jq -e . "$AI_REQUEST_FILE" >/dev/null 2>&1; then
@@ -206,27 +203,18 @@ jobs:
                 --arg promptText "$PROMPT_TRUNCATED" \
                 --arg evidenceText "$EVIDENCE_TRUNCATED" \
                 '{
-                  model: "gpt-4.1-mini",
-                  input: [
+                  model: "gpt-4o-mini",
+                  messages: [
                     {
                       role: "system",
-                      content: [
-                        {
-                          type: "input_text",
-                          text: $promptText
-                        }
-                      ]
+                      content: $promptText
                     },
                     {
                       role: "user",
-                      content: [
-                        {
-                          type: "input_text",
-                          text: ("Codebase Evidence:\n" + $evidenceText)
-                        }
-                      ]
+                      content: ("Codebase Evidence:\n" + $evidenceText)
                     }
-                  ]
+                  ],
+                  temperature: 0.2
                 }' > "$AI_REQUEST_FILE"; then
                 AI_FAILURE_REASON="Failed to build OpenAI request JSON."
               elif ! jq -e . "$AI_REQUEST_FILE" >/dev/null 2>&1; then
@@ -239,10 +227,10 @@ jobs:
               AI_REQUEST_SHA="$(sha256sum "$AI_REQUEST_FILE" | awk '{print $1}')"
               AI_DEBUG_DETAILS="OpenAI request bytes=${AI_REQUEST_BYTES}, sha256=${AI_REQUEST_SHA}, minimal_mode=${OPENAI_DEBUG_MINIMAL:-false}."
 
-              AI_STATUS="$(curl --max-time 45 -sS -o "$AI_RESPONSE_FILE" -w "%{http_code}" https://api.openai.com/v1/responses -H "Content-Type: application/json" -H "Authorization: Bearer ${OPENAI_API_KEY}" --data-binary "@${AI_REQUEST_FILE}" || true)"
+              AI_STATUS="$(curl --max-time 45 -sS -o "$AI_RESPONSE_FILE" -w "%{http_code}" "$OPENAI_URL" -H "Content-Type: application/json" -H "Authorization: Bearer ${OPENAI_API_KEY}" --data-binary "@${AI_REQUEST_FILE}" || true)"
 
               if [ "$AI_STATUS" -ge 200 ] && [ "$AI_STATUS" -lt 300 ]; then
-                AI_REPORT="$(jq -r '(.output_text // ([.output[]?.content[]? | .text? // empty] | map(select(length > 0)) | join("\n")) // empty)' "$AI_RESPONSE_FILE" 2>/dev/null || true)"
+                AI_REPORT="$(jq -r '.choices[0].message.content // empty' "$AI_RESPONSE_FILE" 2>/dev/null || true)"
                 if [ -z "$AI_REPORT" ]; then
                   AI_FAILURE_REASON="OpenAI returned HTTP ${AI_STATUS} but no text output."
                 fi
@@ -256,20 +244,16 @@ jobs:
                   AI_MINI_RESPONSE_FILE="$(mktemp)"
 
                   if jq -n '{
-                    model: "gpt-4.1-mini",
-                    input: [
+                    model: "gpt-4o-mini",
+                    messages: [
                       {
                         role: "user",
-                        content: [
-                          {
-                            type: "input_text",
-                            text: "hello"
-                          }
-                        ]
+                        content: "hello"
                       }
-                    ]
+                    ],
+                    temperature: 0
                   }' > "$AI_MINI_REQUEST_FILE"; then
-                    AI_MINI_STATUS="$(curl --max-time 45 -sS -o "$AI_MINI_RESPONSE_FILE" -w "%{http_code}" https://api.openai.com/v1/responses -H "Content-Type: application/json" -H "Authorization: Bearer ${OPENAI_API_KEY}" --data-binary "@${AI_MINI_REQUEST_FILE}" || true)"
+                    AI_MINI_STATUS="$(curl --max-time 45 -sS -o "$AI_MINI_RESPONSE_FILE" -w "%{http_code}" "$OPENAI_URL" -H "Content-Type: application/json" -H "Authorization: Bearer ${OPENAI_API_KEY}" --data-binary "@${AI_MINI_REQUEST_FILE}" || true)"
                     AI_MINI_ERROR_MSG="$(jq -r '.error.message // .message // empty' "$AI_MINI_RESPONSE_FILE" 2>/dev/null || true)"
                   fi
                 fi
